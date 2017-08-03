@@ -69,11 +69,26 @@ UKF::UKF() {
   // no. of sigma points
   n_sig_ = 2*n_aug_+1; // to avoid repeated calculations throughout
 
-  // weights of sigma points
-  weights_ = VectorXd(n_sig_);
-
   // define spreading parameter, lambda
   lambda_ = 3 - n_aug_;
+
+  // weights of sigma points
+  weights_ = VectorXd(n_sig_);
+  // NOTE: there are other ways of calculating weights
+  // calc the weights_ here for code efficiency since it's made up of constants 
+  weights_.fill(1 / (2 * (lambda_ + n_aug_)));
+  weights_(0) = lambda_ / (lambda_ + n_aug_);
+
+  ///*lidar and radar measurement noise matrix, R
+  R_lidar_ = MatrixXd(2,2); //TODO: potential refactor, set n_z_radar_ and n_z_lidar_ instance variables
+  R_lidar_ << std_laspx_*std_laspx_,0,
+              0,std_laspy_*std_laspy_;
+
+  R_radar_ = MatrixXd(3,3); //TODO: potential refactor, set n_z_radar_ and n_z_lidar_ instance variables
+  R_radar_ << std_radr_*std_radr_,0,0,
+              0,std_radphi_*std_radphi_,0,
+              0,0,std_radrd_*std_radrd_;
+
 }
 
 UKF::~UKF() {}
@@ -228,18 +243,10 @@ void UKF::Prediction(double delta_t) {
   }
 
   //**Step 3: using predicted sigma points to predict the new state mean vector and state covariance
-  //weights for each sigma point
-  // NOTE: there are other ways of calculating weights
-  weights_(0) = lambda_ / (lambda_ + n_aug_);
-  for (int i=1; i<n_sig_; i++) {
-    weights_(i) = 1 / (2 * (lambda_ + n_aug_));
-  }
 
   //predicted state mean vector
   x_.fill(0.0);
-  for (int i=0; i<n_sig_; i++) {
-    x_ += weights_(i) * Xsig_pred_.col(i);
-  }
+  x_ = Xsig_pred_ * weights_;
 
   //predicted state covariance matrix
   P_.fill(0.0); // I didn't set this to 0 in my own solution in the lecture, since that was just one update, but there we have continuous input of measurements
@@ -266,20 +273,8 @@ void UKF::UpdateLidar(MeasurementPackage meas_package) {
   MatrixXd Zsig = MatrixXd(n_z, n_sig_);
 
   // transform sigma points into measurement space
-  for (int i=0; i<n_sig_; i++) {
-    // extract values for convenience
-    double p_x = Xsig_pred_(0,i);
-    double p_y = Xsig_pred_(1,i);
-    double v = Xsig_pred_(2,i);
-    double yaw = Xsig_pred_(3,i);
-
-    double v1 = cos(yaw)*v; //convert to v1, just like the formula for calculating radar parameters in the EKF project
-    double v2 = sin(yaw)*v; 
-
-    // measurement model 
-    Zsig(0,i) = p_x;
-    Zsig(1,i) = p_y;
-  }
+  // using the Eigen block function to simplify code, 0,0 represents the starting row/col of Xsig_pred_, the matrix we want to copy, and n_z,n_sig_ represent the ending row/col
+  Zsig = Xsig_pred_.block(0,0,n_z,n_sig_);
 
   // once we have the sigma points in the measurement space, we can calculate the predicted measurements
 
@@ -301,12 +296,7 @@ void UKF::UpdateLidar(MeasurementPackage meas_package) {
   }
 
   // add measurement noise, R. R does not depend on n_aug_, so we add it to the overall S
-  MatrixXd R = MatrixXd(n_z,n_z);
-
-  R << std_laspx_*std_laspx_,0,
-       0,std_laspy_*std_laspy_;
-
-  S += R;
+  S += R_lidar_;
 
   //**Step 2: update using measurement readings
 
@@ -369,10 +359,26 @@ void UKF::UpdateRadar(MeasurementPackage meas_package) {
     double v1 = cos(yaw)*v; //convert to v1, just like the formula for calculating radar parameters in the EKF project
     double v2 = sin(yaw)*v; 
 
+    // set variables for convenience
+    double c1 = p_x*p_x + p_y*p_y;
+    double c2 = sqrt(p_x*p_x + p_y*p_y);
+
     // measurement model 
+
     Zsig(0,i) = sqrt(p_x*p_x + p_y*p_y);                        //r
-    Zsig(1,i) = atan2(p_y,p_x);                                 //phi
-    Zsig(2,i) = (p_x*v1 + p_y*v2 ) / sqrt(p_x*p_x + p_y*p_y);   //r_dot
+    
+    // avoid atan2(0,0), which is undefined even though the atan2() function does return a valid number
+    if (fabs(p_x < 0.0001) && fabs(p_y < 0.0001)) {
+      Zsig(1,i) = 0;                                              //phi
+    } else {
+      Zsig(1,i) = atan2(p_y,p_x);                                 //phi
+    }
+
+    if(fabs(c1) < 0.0001) {
+      Zsig(2,i) = 0.0;   //r_dot
+    } else {
+      Zsig(2,i) = (p_x*v1 + p_y*v2 ) / sqrt(p_x*p_x + p_y*p_y);   //r_dot
+    }
   }
 
   // once we have the sigma points in the measurement space, we can calculate the predicted measurements
@@ -392,6 +398,7 @@ void UKF::UpdateRadar(MeasurementPackage meas_package) {
     VectorXd z_diff = Zsig.col(i) - z_pred;
 
     // normalize the phi to make sure it's between -PI and PI
+    // TODO: refactor this into a helper method
     while (z_diff(1) > PI) z_diff(1) -= 2.*PI; // apparently c++ has this one-line shorthand control flow :)
     while (z_diff(1) < -PI) z_diff(1) += 2.*PI; // increment by 2.*PI since this will normalize faster
     
@@ -399,12 +406,7 @@ void UKF::UpdateRadar(MeasurementPackage meas_package) {
   }
 
   // add measurement noise, R. R does not depend on n_aug_, so we add it to the overall S
-  MatrixXd R = MatrixXd(n_z,n_z);
-  R << std_radr_*std_radr_,0,0,
-       0,std_radphi_*std_radphi_,0,
-       0,0,std_radrd_*std_radrd_;
-
-  S += R;
+  S += R_radar_;
 
   //**Step 2: update using measurement readings
 
