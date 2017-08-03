@@ -97,7 +97,7 @@ void UKF::ProcessMeasurement(MeasurementPackage meas_package) {
       initial_p_y = meas_package.raw_measurements_[1];
       // cannot infer v, yaw or yawd, use best guess by cheating :)
       // taking the first meas (LIDAR), px=.312243/px=.58034 and second meas (RADAR), px=.5342/py=.8629 (converted from rho/phi) and calculate the other values
-      initial_v = 7.1862; // calculate vx and vy and then use pythagoras to get v
+      initial_v = 4.89281; // rho_dot is not the same as speed in the CTRV model, but use it to approximate it for now, the value used here is the first RADAR meas
       initial_yaw = 0.8546; // calculate arctan(delta_py/delta_px)
       initial_yawd = 0.425; // cannot calculate delta_yaw/delta_t without taking at least 2 RADAR meas, pick an arbitrary one for now, half of intial_yaw
     } else if (meas_package.sensor_type_ == MeasurementPackage::RADAR && use_radar_) {
@@ -109,7 +109,7 @@ void UKF::ProcessMeasurement(MeasurementPackage meas_package) {
       initial_p_y = cos(phi) * rho;
 
       // again, cheating to get the values here using the same approach as the LIDAR case :)
-      initial_v = 10.2466;
+      initial_v = rho_dot;
       initial_yaw = -0.994;
       initial_yawd = 0.5;
     }
